@@ -17,6 +17,7 @@ import {
   type MixSettings,
 } from "@/lib/audio/mix";
 import { processVocal, type CorrectionSettings } from "@/lib/audio/process";
+import { DEFAULT_DENOISE, estimateNoiseFloorDb, type DenoiseSettings } from "@/lib/audio/denoise";
 import { listProjects, uploadAudio, downloadAudio, deleteProject, type ProjectRow } from "@/lib/projects";
 
 type Take = {
@@ -26,8 +27,11 @@ type Take = {
   sampleRate: number;
   peaks: Float32Array;
   duration: number;
+  cleaned: Float32Array | null;
+  cleanedPeaks: Float32Array | null;
   corrected: Float32Array | null;
   correctedPeaks: Float32Array | null;
+  noiseFloorDb: number;
   onsets: number[];
   alignedOnsets: number[];
 };
@@ -55,13 +59,14 @@ export function StudioApp() {
   const [metronome, setMetronome] = useState(true);
   const [offsetMs, setOffsetMs] = useState(0);
 
-  const [settings, setSettings] = useState<CorrectionSettings>({
+  const [denoise, setDenoise] = useState<DenoiseSettings>(DEFAULT_DENOISE);
+  const [settings, setSettings] = useState<Omit<CorrectionSettings, "denoise">>({
     pitchStrength: 0.7,
     timingStrength: 0.4,
     subdivision: 2,
   });
   const [mix, setMix] = useState<MixSettings>(DEFAULT_MIX);
-  const [ab, setAb] = useState<"corrected" | "original">("corrected");
+  const [ab, setAb] = useState<"original" | "cleaned" | "corrected">("corrected");
 
   const [processing, setProcessing] = useState<{ label: string; pct: number } | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -82,12 +87,16 @@ export function StudioApp() {
 
   const vocalForPlayback = useMemo(() => {
     if (!active) return null;
-    return ab === "corrected" && active.corrected ? active.corrected : active.data;
+    if (ab === "corrected" && active.corrected) return active.corrected;
+    if (ab === "cleaned" && active.cleaned) return active.cleaned;
+    return active.data;
   }, [active, ab]);
 
   const vocalPeaks = useMemo(() => {
     if (!active) return null;
-    return ab === "corrected" && active.correctedPeaks ? active.correctedPeaks : active.peaks;
+    if (ab === "corrected" && active.correctedPeaks) return active.correctedPeaks;
+    if (ab === "cleaned" && active.cleanedPeaks) return active.cleanedPeaks;
+    return active.peaks;
   }, [active, ab]);
 
   /* ---------------------------------------------------------------- transport */
@@ -246,11 +255,18 @@ export function StudioApp() {
             sampleRate: buf.sampleRate,
             peaks: waveformPeaks(trimmed, PEAK_BUCKETS),
             duration: trimmed.length / buf.sampleRate,
+            cleaned: null,
+            cleanedPeaks: null,
             corrected: null,
             correctedPeaks: null,
+            noiseFloorDb: estimateNoiseFloorDb(trimmed, buf.sampleRate),
             onsets: [],
             alignedOnsets: [],
           };
+          setDenoise((d) => ({
+            ...d,
+            thresholdDb: Math.round(Math.min(-24, take.noiseFloorDb + 10)),
+          }));
           setTakes((prev) => [...prev, take]);
           setActiveId(take.id);
           toast.success("Take captured — tune it below");
@@ -332,14 +348,20 @@ export function StudioApp() {
     stop();
     setProcessing({ label: "Starting", pct: 0 });
     try {
-      const res = await processVocal(active.data, active.sampleRate, analysis, settings, (label, pct) =>
-        setProcessing({ label, pct }),
+      const res = await processVocal(
+        active.data,
+        active.sampleRate,
+        analysis,
+        { ...settings, denoise },
+        (label, pct) => setProcessing({ label, pct }),
       );
       setTakes((prev) =>
         prev.map((t) =>
           t.id === active.id
             ? {
                 ...t,
+                cleaned: res.cleaned,
+                cleanedPeaks: waveformPeaks(res.cleaned, PEAK_BUCKETS),
                 corrected: res.corrected,
                 correctedPeaks: waveformPeaks(res.corrected, PEAK_BUCKETS),
                 onsets: res.onsets,
@@ -356,7 +378,7 @@ export function StudioApp() {
     } finally {
       setProcessing(null);
     }
-  }, [active, analysis, settings, stop]);
+  }, [active, analysis, settings, denoise, stop]);
 
   /* -------------------------------------------------------------------- export */
 
@@ -459,7 +481,7 @@ export function StudioApp() {
         instrumental_path: instrumentalPath,
         vocal_path: vocalPath,
         mix_path: mixPath,
-        settings: { ...settings, mix, offsetMs },
+        settings: { ...settings, denoise, mix, offsetMs },
       });
       if (error) throw error;
       toast.success("Project saved");
@@ -479,6 +501,7 @@ export function StudioApp() {
     analysis,
     projectName,
     settings,
+    denoise,
     offsetMs,
     refreshProjects,
   ]);
@@ -503,8 +526,11 @@ export function StudioApp() {
             sampleRate: buf.sampleRate,
             peaks: waveformPeaks(mono, PEAK_BUCKETS),
             duration: buf.duration,
+            cleaned: null,
+            cleanedPeaks: null,
             corrected: null,
             correctedPeaks: null,
+            noiseFloorDb: estimateNoiseFloorDb(mono, buf.sampleRate),
             onsets: [],
             alignedOnsets: [],
           };
@@ -699,9 +725,98 @@ export function StudioApp() {
           )}
         </section>
 
-        {/* 3 — correction */}
+        {/* 3 — noise cleanup */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">03 · Pitch &amp; timing</p>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+            <div className="min-w-0">
+              <p className="label-xs">03 · Noise cleanup</p>
+              <p className="truncate text-sm font-semibold">Denoise &amp; gate</p>
+            </div>
+            <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={denoise.enabled}
+                onChange={(e) => setDenoise((d) => ({ ...d, enabled: e.target.checked }))}
+                className="accent-primary"
+              />
+              Denoise
+            </label>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Runs before pitch and timing correction, so hiss and room tone don't confuse the
+            tuner.
+            {active ? ` Noise floor ≈ ${Math.round(active.noiseFloorDb)} dBFS.` : ""}
+          </p>
+
+          <div className="mt-4 space-y-4">
+            <Fader
+              label="Noise reduction"
+              value={denoise.amount}
+              onChange={(v) => setDenoise((d) => ({ ...d, amount: v }))}
+              accent="accent"
+            />
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background/40 px-3 py-2">
+              <span className="label-xs">Noise gate</span>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={denoise.gateEnabled}
+                  onChange={(e) => setDenoise((d) => ({ ...d, gateEnabled: e.target.checked }))}
+                  className="accent-primary"
+                />
+                {denoise.gateEnabled ? "On" : "Off"}
+              </label>
+            </div>
+
+            {denoise.gateEnabled && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Fader
+                  label="Gate threshold"
+                  value={denoise.thresholdDb}
+                  min={-80}
+                  max={-10}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, thresholdDb: v }))}
+                  format={(v) => `${Math.round(v)} dB`}
+                  accent="vocal"
+                />
+                <Fader
+                  label="Gate depth"
+                  value={denoise.floorDb}
+                  min={-60}
+                  max={0}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, floorDb: v }))}
+                  format={(v) => `${Math.round(v)} dB`}
+                  accent="vocal"
+                />
+                <Fader
+                  label="Attack"
+                  value={denoise.attackMs}
+                  min={1}
+                  max={50}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, attackMs: v }))}
+                  format={(v) => `${Math.round(v)} ms`}
+                />
+                <Fader
+                  label="Release"
+                  value={denoise.releaseMs}
+                  min={20}
+                  max={600}
+                  step={10}
+                  onChange={(v) => setDenoise((d) => ({ ...d, releaseMs: v }))}
+                  format={(v) => `${Math.round(v)} ms`}
+                />
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 4 — correction */}
+        <section className="panel mt-4 p-4">
+          <p className="label-xs">04 · Pitch &amp; timing</p>
           <div className="mt-3 space-y-4">
             <Fader
               label="Pitch correction strength"
@@ -751,24 +866,24 @@ export function StudioApp() {
           )}
           {active?.corrected && (
             <div className="mt-3 flex rounded-xl border border-border p-1">
-              {(["original", "corrected"] as const).map((k) => (
+              {(["original", "cleaned", "corrected"] as const).map((k) => (
                 <button
                   key={k}
                   onClick={() => setAb(k)}
-                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold capitalize ${
+                  className={`flex-1 rounded-lg px-2 py-2 text-xs font-bold ${
                     ab === k ? "bg-surface-raised text-foreground" : "text-muted-foreground"
                   }`}
                 >
-                  {k === "original" ? "A · original" : "B · tuned"}
+                  {k === "original" ? "A · raw" : k === "cleaned" ? "B · clean" : "C · tuned"}
                 </button>
               ))}
             </div>
           )}
         </section>
 
-        {/* 4 — mix */}
+        {/* 5 — mix */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">04 · Mix</p>
+          <p className="label-xs">05 · Mix</p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <Fader
               label="Vocal level"
@@ -821,9 +936,9 @@ export function StudioApp() {
           </div>
         </section>
 
-        {/* 5 — export & projects */}
+        {/* 6 — export & projects */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">05 · Export</p>
+          <p className="label-xs">06 · Export</p>
           <div className="mt-3 grid grid-cols-3 gap-2">
             <ExportButton onClick={() => void exportAudio("mix")} label="Full mix" primary />
             <ExportButton onClick={() => void exportAudio("vocal")} label="Vocal stem" />
