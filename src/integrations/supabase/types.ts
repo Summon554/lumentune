@@ -14,7 +14,48 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      projects: {
+        Row: {
+          bpm: number | null
+          created_at: string
+          id: string
+          instrumental_path: string | null
+          mix_path: string | null
+          musical_key: string | null
+          name: string
+          settings: Json
+          updated_at: string
+          user_id: string
+          vocal_path: string | null
+        }
+        Insert: {
+          bpm?: number | null
+          created_at?: string
+          id?: string
+          instrumental_path?: string | null
+          mix_path?: string | null
+          musical_key?: string | null
+          name?: string
+          settings?: Json
+          updated_at?: string
+          user_id: string
+          vocal_path?: string | null
+        }
+        Update: {
+          bpm?: number | null
+          created_at?: string
+          id?: string
+          instrumental_path?: string | null
+          mix_path?: string | null
+          musical_key?: string | null
+          name?: string
+          settings?: Json
+          updated_at?: string
+          user_id?: string
+          vocal_path?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
