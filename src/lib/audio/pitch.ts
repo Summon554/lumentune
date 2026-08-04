@@ -1,55 +1,92 @@
 /** YIN fundamental frequency estimation + TD-PSOLA pitch correction. */
+import { fft } from "./fft";
 
 export type PitchTrack = {
-  hop: number;
+  hop: number; // in original-rate samples
+  center: number; // analysis-window centre offset, original-rate samples
   sampleRate: number;
   f0: Float32Array; // 0 = unvoiced
   times: Float32Array;
 };
 
-const WINDOW = 2048;
-const HOP = 256;
+const MIN_F = 65;
+const MAX_F = 1000;
+const ANALYSIS_RATE = 16000;
 
+function downsample(signal: Float32Array, factor: number) {
+  if (factor <= 1) return signal;
+  const out = new Float32Array(Math.floor(signal.length / factor));
+  for (let i = 0; i < out.length; i++) {
+    let sum = 0;
+    const start = i * factor;
+    for (let k = 0; k < factor; k++) sum += signal[start + k] ?? 0;
+    out[i] = sum / factor;
+  }
+  return out;
+}
+
+/**
+ * YIN with an FFT-based difference function so full-length takes analyse fast.
+ * Runs on a ~16 kHz copy; results are expressed in original-rate samples.
+ */
 export function yinTrack(signal: Float32Array, sampleRate: number): PitchTrack {
-  const minF = 65;
-  const maxF = 1000;
-  const tauMin = Math.floor(sampleRate / maxF);
-  const tauMax = Math.min(WINDOW - 1, Math.floor(sampleRate / minF));
-  const frames = Math.max(0, Math.floor((signal.length - WINDOW) / HOP) + 1);
+  const factor = Math.max(1, Math.round(sampleRate / ANALYSIS_RATE));
+  const rate = sampleRate / factor;
+  const x = downsample(signal, factor);
+
+  const W = 1024;
+  const N = 2048; // fft size for autocorrelation
+  const hopD = 128;
+  const tauMin = Math.max(2, Math.floor(rate / MAX_F));
+  const tauMax = Math.min(W - 2, Math.ceil(rate / MIN_F));
+  const frames = Math.max(0, Math.floor((x.length - W) / hopD) + 1);
+
   const f0 = new Float32Array(frames);
   const times = new Float32Array(frames);
-  const diff = new Float32Array(tauMax + 1);
+  const re = new Float32Array(N);
+  const im = new Float32Array(N);
+  const prefix = new Float64Array(W + 1);
   const cmnd = new Float32Array(tauMax + 1);
 
   for (let fi = 0; fi < frames; fi++) {
-    const off = fi * HOP;
-    times[fi] = (off + WINDOW / 2) / sampleRate;
+    const off = fi * hopD;
+    times[fi] = ((off + W / 2) * factor) / sampleRate;
 
-    let energy = 0;
-    for (let i = 0; i < WINDOW; i++) energy += signal[off + i]! * signal[off + i]!;
-    if (energy / WINDOW < 1e-6) {
+    prefix[0] = 0;
+    for (let i = 0; i < W; i++) {
+      const v = x[off + i] ?? 0;
+      prefix[i + 1] = prefix[i]! + v * v;
+    }
+    if (prefix[W]! / W < 2e-6) {
       f0[fi] = 0;
       continue;
     }
 
-    for (let tau = 1; tau <= tauMax; tau++) {
-      let sum = 0;
-      for (let i = 0; i < WINDOW - tauMax; i++) {
-        const d = signal[off + i]! - signal[off + i + tau]!;
-        sum += d * d;
-      }
-      diff[tau] = sum;
+    re.fill(0);
+    im.fill(0);
+    for (let i = 0; i < W; i++) re[i] = x[off + i] ?? 0;
+    fft(re, im);
+    for (let i = 0; i < N; i++) {
+      const p = re[i]! * re[i]! + im[i]! * im[i]!;
+      re[i] = p;
+      im[i] = 0;
     }
-    cmnd[0] = 1;
+    // inverse FFT via conjugate trick
+    fft(re, im);
+    const scale = 1 / N;
+
     let running = 0;
+    cmnd[0] = 1;
     for (let tau = 1; tau <= tauMax; tau++) {
-      running += diff[tau]!;
-      cmnd[tau] = running === 0 ? 1 : (diff[tau]! * tau) / running;
+      const r = re[tau]! * scale;
+      const d = prefix[W - tau]! + (prefix[W]! - prefix[tau]!) - 2 * r;
+      running += d;
+      cmnd[tau] = running <= 0 ? 1 : (d * tau) / running;
     }
 
     let tauEst = -1;
     for (let tau = tauMin; tau <= tauMax; tau++) {
-      if (cmnd[tau]! < 0.15) {
+      if (cmnd[tau]! < 0.14) {
         while (tau + 1 <= tauMax && cmnd[tau + 1]! < cmnd[tau]!) tau++;
         tauEst = tau;
         break;
@@ -58,13 +95,12 @@ export function yinTrack(signal: Float32Array, sampleRate: number): PitchTrack {
     if (tauEst < 0) {
       let best = tauMin;
       for (let tau = tauMin; tau <= tauMax; tau++) if (cmnd[tau]! < cmnd[best]!) best = tau;
-      if (cmnd[best]! < 0.35) tauEst = best;
+      if (cmnd[best]! < 0.4) tauEst = best;
     }
     if (tauEst < 0) {
       f0[fi] = 0;
       continue;
     }
-    // parabolic refinement
     const x0 = Math.max(1, tauEst - 1);
     const x2 = Math.min(tauMax, tauEst + 1);
     const s0 = cmnd[x0]!;
@@ -72,9 +108,26 @@ export function yinTrack(signal: Float32Array, sampleRate: number): PitchTrack {
     const s2 = cmnd[x2]!;
     const denom = 2 * (2 * s1 - s2 - s0);
     const shift = denom !== 0 ? (s2 - s0) / denom : 0;
-    f0[fi] = sampleRate / (tauEst + shift);
+    const hz = rate / (tauEst + shift);
+    f0[fi] = hz >= MIN_F && hz <= MAX_F ? hz : 0;
   }
-  return { hop: HOP, sampleRate, f0, times };
+
+  // median-of-3 smoothing to kill octave flickers
+  const smooth = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    const a = f0[Math.max(0, i - 1)]!;
+    const b = f0[i]!;
+    const c = f0[Math.min(frames - 1, i + 1)]!;
+    smooth[i] = b === 0 ? 0 : [a, b, c].sort((p, q) => p - q)[1]! || b;
+  }
+
+  return {
+    hop: hopD * factor,
+    center: (W / 2) * factor,
+    sampleRate,
+    f0: smooth,
+    times,
+  };
 }
 
 export function hzToMidi(hz: number) {
