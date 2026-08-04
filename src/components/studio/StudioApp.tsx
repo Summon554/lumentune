@@ -725,9 +725,98 @@ export function StudioApp() {
           )}
         </section>
 
-        {/* 3 — correction */}
+        {/* 3 — noise cleanup */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">03 · Pitch &amp; timing</p>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+            <div className="min-w-0">
+              <p className="label-xs">03 · Noise cleanup</p>
+              <p className="truncate text-sm font-semibold">Denoise &amp; gate</p>
+            </div>
+            <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={denoise.enabled}
+                onChange={(e) => setDenoise((d) => ({ ...d, enabled: e.target.checked }))}
+                className="accent-primary"
+              />
+              Denoise
+            </label>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Runs before pitch and timing correction, so hiss and room tone don't confuse the
+            tuner.
+            {active ? ` Noise floor ≈ ${Math.round(active.noiseFloorDb)} dBFS.` : ""}
+          </p>
+
+          <div className="mt-4 space-y-4">
+            <Fader
+              label="Noise reduction"
+              value={denoise.amount}
+              onChange={(v) => setDenoise((d) => ({ ...d, amount: v }))}
+              accent="accent"
+            />
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-background/40 px-3 py-2">
+              <span className="label-xs">Noise gate</span>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={denoise.gateEnabled}
+                  onChange={(e) => setDenoise((d) => ({ ...d, gateEnabled: e.target.checked }))}
+                  className="accent-primary"
+                />
+                {denoise.gateEnabled ? "On" : "Off"}
+              </label>
+            </div>
+
+            {denoise.gateEnabled && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Fader
+                  label="Gate threshold"
+                  value={denoise.thresholdDb}
+                  min={-80}
+                  max={-10}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, thresholdDb: v }))}
+                  format={(v) => `${Math.round(v)} dB`}
+                  accent="vocal"
+                />
+                <Fader
+                  label="Gate depth"
+                  value={denoise.floorDb}
+                  min={-60}
+                  max={0}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, floorDb: v }))}
+                  format={(v) => `${Math.round(v)} dB`}
+                  accent="vocal"
+                />
+                <Fader
+                  label="Attack"
+                  value={denoise.attackMs}
+                  min={1}
+                  max={50}
+                  step={1}
+                  onChange={(v) => setDenoise((d) => ({ ...d, attackMs: v }))}
+                  format={(v) => `${Math.round(v)} ms`}
+                />
+                <Fader
+                  label="Release"
+                  value={denoise.releaseMs}
+                  min={20}
+                  max={600}
+                  step={10}
+                  onChange={(v) => setDenoise((d) => ({ ...d, releaseMs: v }))}
+                  format={(v) => `${Math.round(v)} ms`}
+                />
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 4 — correction */}
+        <section className="panel mt-4 p-4">
+          <p className="label-xs">04 · Pitch &amp; timing</p>
           <div className="mt-3 space-y-4">
             <Fader
               label="Pitch correction strength"
@@ -792,9 +881,9 @@ export function StudioApp() {
           )}
         </section>
 
-        {/* 4 — mix */}
+        {/* 5 — mix */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">04 · Mix</p>
+          <p className="label-xs">05 · Mix</p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <Fader
               label="Vocal level"
@@ -847,9 +936,9 @@ export function StudioApp() {
           </div>
         </section>
 
-        {/* 5 — export & projects */}
+        {/* 6 — export & projects */}
         <section className="panel mt-4 p-4">
-          <p className="label-xs">05 · Export</p>
+          <p className="label-xs">06 · Export</p>
           <div className="mt-3 grid grid-cols-3 gap-2">
             <ExportButton onClick={() => void exportAudio("mix")} label="Full mix" primary />
             <ExportButton onClick={() => void exportAudio("vocal")} label="Vocal stem" />
