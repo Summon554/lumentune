@@ -20,7 +20,7 @@ export const DEFAULT_MIX: MixSettings = {
 
 export function monoToBuffer(ctx: BaseAudioContext, data: Float32Array, sampleRate: number) {
   const buf = ctx.createBuffer(1, data.length, sampleRate);
-  buf.copyToChannel(data, 0);
+  buf.copyToChannel(data as unknown as Float32Array<ArrayBuffer>, 0);
   return buf;
 }
 
