@@ -171,7 +171,7 @@ export function targetContour(track: PitchTrack, pitchClasses: number[], strengt
 }
 
 function f0At(track: PitchTrack, sample: number) {
-  const idx = Math.round((sample - WINDOW / 2) / track.hop);
+  const idx = Math.round((sample - track.center) / track.hop);
   if (idx < 0 || idx >= track.f0.length) return 0;
   return track.f0[idx]!;
 }
@@ -225,7 +225,7 @@ export function psolaCorrect(
     while (mi + 1 < marks.length && Math.abs(marks[mi + 1]! - outPos) < Math.abs(marks[mi]! - outPos))
       mi++;
     const center = marks[mi]!;
-    const idx = Math.round((center - WINDOW / 2) / track.hop);
+    const idx = Math.round((center - track.center) / track.hop);
     const measured = idx >= 0 && idx < track.f0.length ? track.f0[idx]! : 0;
     const wanted = idx >= 0 && idx < target.length ? target[idx]! : 0;
 
