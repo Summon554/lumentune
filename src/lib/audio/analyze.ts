@@ -140,7 +140,7 @@ export function chromaVector(signal: Float32Array, sampleRate: number) {
       if (freq < 55 || freq > 2000) continue;
       const midi = 69 + 12 * Math.log2(freq / 440);
       const pc = ((Math.round(midi) % 12) + 12) % 12;
-      chroma[pc] += mags[b]! * mags[b]!;
+      chroma[pc] = (chroma[pc] ?? 0) + mags[b]! * mags[b]!;
     }
   }
   const max = Math.max(...chroma);
