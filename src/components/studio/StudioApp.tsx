@@ -364,8 +364,14 @@ export function StudioApp() {
     async (kind: "mix" | "vocal" | "instrumental") => {
       const sampleRate = active?.sampleRate ?? instrBuffer?.sampleRate ?? 44100;
       const vocal = vocalForPlayback;
-      if (kind === "vocal" && !vocal) return toast.error("No vocal to export");
-      if (kind === "instrumental" && !instrBuffer) return toast.error("No instrumental loaded");
+      if (kind === "vocal" && !vocal) {
+        toast.error("No vocal to export");
+        return;
+      }
+      if (kind === "instrumental" && !instrBuffer) {
+        toast.error("No instrumental loaded");
+        return;
+      }
       setBusy("Rendering…");
       try {
         const rendered = await renderMix({
@@ -403,8 +409,14 @@ export function StudioApp() {
   }, [refreshProjects]);
 
   const saveProject = useCallback(async () => {
-    if (!user) return toast.error("Sign in to save projects");
-    if (!instrBuffer && !active) return toast.error("Nothing to save yet");
+    if (!user) {
+      toast.error("Sign in to save projects");
+      return;
+    }
+    if (!instrBuffer && !active) {
+      toast.error("Nothing to save yet");
+      return;
+    }
     setBusy("Saving…");
     try {
       const id = crypto.randomUUID();
