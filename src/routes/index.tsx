@@ -14,7 +14,7 @@ export const Route = createFileRoute("/")({
       {
         property: "og:description",
         content:
-          "A mobile-first vocal studio: instrumental analysis, takes, pitch correction, beat alignment, mixing and WAV export.",
+          "VoxTune detects tempo and key from your instrumental, records vocals with a beat-synced count-in, tunes pitch, aligns timing and exports a finished WAV mix.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
