@@ -17,6 +17,7 @@ import {
   type MixSettings,
 } from "@/lib/audio/mix";
 import { processVocal, type CorrectionSettings } from "@/lib/audio/process";
+import { DEFAULT_DENOISE, estimateNoiseFloorDb, type DenoiseSettings } from "@/lib/audio/denoise";
 import { listProjects, uploadAudio, downloadAudio, deleteProject, type ProjectRow } from "@/lib/projects";
 
 type Take = {
@@ -26,8 +27,11 @@ type Take = {
   sampleRate: number;
   peaks: Float32Array;
   duration: number;
+  cleaned: Float32Array | null;
+  cleanedPeaks: Float32Array | null;
   corrected: Float32Array | null;
   correctedPeaks: Float32Array | null;
+  noiseFloorDb: number;
   onsets: number[];
   alignedOnsets: number[];
 };
@@ -55,13 +59,14 @@ export function StudioApp() {
   const [metronome, setMetronome] = useState(true);
   const [offsetMs, setOffsetMs] = useState(0);
 
-  const [settings, setSettings] = useState<CorrectionSettings>({
+  const [denoise, setDenoise] = useState<DenoiseSettings>(DEFAULT_DENOISE);
+  const [settings, setSettings] = useState<Omit<CorrectionSettings, "denoise">>({
     pitchStrength: 0.7,
     timingStrength: 0.4,
     subdivision: 2,
   });
   const [mix, setMix] = useState<MixSettings>(DEFAULT_MIX);
-  const [ab, setAb] = useState<"corrected" | "original">("corrected");
+  const [ab, setAb] = useState<"original" | "cleaned" | "corrected">("corrected");
 
   const [processing, setProcessing] = useState<{ label: string; pct: number } | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -82,12 +87,16 @@ export function StudioApp() {
 
   const vocalForPlayback = useMemo(() => {
     if (!active) return null;
-    return ab === "corrected" && active.corrected ? active.corrected : active.data;
+    if (ab === "corrected" && active.corrected) return active.corrected;
+    if (ab === "cleaned" && active.cleaned) return active.cleaned;
+    return active.data;
   }, [active, ab]);
 
   const vocalPeaks = useMemo(() => {
     if (!active) return null;
-    return ab === "corrected" && active.correctedPeaks ? active.correctedPeaks : active.peaks;
+    if (ab === "corrected" && active.correctedPeaks) return active.correctedPeaks;
+    if (ab === "cleaned" && active.cleanedPeaks) return active.cleanedPeaks;
+    return active.peaks;
   }, [active, ab]);
 
   /* ---------------------------------------------------------------- transport */
@@ -246,11 +255,18 @@ export function StudioApp() {
             sampleRate: buf.sampleRate,
             peaks: waveformPeaks(trimmed, PEAK_BUCKETS),
             duration: trimmed.length / buf.sampleRate,
+            cleaned: null,
+            cleanedPeaks: null,
             corrected: null,
             correctedPeaks: null,
+            noiseFloorDb: estimateNoiseFloorDb(trimmed, buf.sampleRate),
             onsets: [],
             alignedOnsets: [],
           };
+          setDenoise((d) => ({
+            ...d,
+            thresholdDb: Math.round(Math.min(-24, take.noiseFloorDb + 10)),
+          }));
           setTakes((prev) => [...prev, take]);
           setActiveId(take.id);
           toast.success("Take captured — tune it below");
@@ -332,14 +348,20 @@ export function StudioApp() {
     stop();
     setProcessing({ label: "Starting", pct: 0 });
     try {
-      const res = await processVocal(active.data, active.sampleRate, analysis, settings, (label, pct) =>
-        setProcessing({ label, pct }),
+      const res = await processVocal(
+        active.data,
+        active.sampleRate,
+        analysis,
+        { ...settings, denoise },
+        (label, pct) => setProcessing({ label, pct }),
       );
       setTakes((prev) =>
         prev.map((t) =>
           t.id === active.id
             ? {
                 ...t,
+                cleaned: res.cleaned,
+                cleanedPeaks: waveformPeaks(res.cleaned, PEAK_BUCKETS),
                 corrected: res.corrected,
                 correctedPeaks: waveformPeaks(res.corrected, PEAK_BUCKETS),
                 onsets: res.onsets,
@@ -356,7 +378,7 @@ export function StudioApp() {
     } finally {
       setProcessing(null);
     }
-  }, [active, analysis, settings, stop]);
+  }, [active, analysis, settings, denoise, stop]);
 
   /* -------------------------------------------------------------------- export */
 
@@ -459,7 +481,7 @@ export function StudioApp() {
         instrumental_path: instrumentalPath,
         vocal_path: vocalPath,
         mix_path: mixPath,
-        settings: { ...settings, mix, offsetMs },
+        settings: { ...settings, denoise, mix, offsetMs },
       });
       if (error) throw error;
       toast.success("Project saved");
@@ -479,6 +501,7 @@ export function StudioApp() {
     analysis,
     projectName,
     settings,
+    denoise,
     offsetMs,
     refreshProjects,
   ]);
@@ -503,8 +526,11 @@ export function StudioApp() {
             sampleRate: buf.sampleRate,
             peaks: waveformPeaks(mono, PEAK_BUCKETS),
             duration: buf.duration,
+            cleaned: null,
+            cleanedPeaks: null,
             corrected: null,
             correctedPeaks: null,
+            noiseFloorDb: estimateNoiseFloorDb(mono, buf.sampleRate),
             onsets: [],
             alignedOnsets: [],
           };
