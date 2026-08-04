@@ -777,15 +777,15 @@ export function StudioApp() {
           )}
           {active?.corrected && (
             <div className="mt-3 flex rounded-xl border border-border p-1">
-              {(["original", "corrected"] as const).map((k) => (
+              {(["original", "cleaned", "corrected"] as const).map((k) => (
                 <button
                   key={k}
                   onClick={() => setAb(k)}
-                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold capitalize ${
+                  className={`flex-1 rounded-lg px-2 py-2 text-xs font-bold ${
                     ab === k ? "bg-surface-raised text-foreground" : "text-muted-foreground"
                   }`}
                 >
-                  {k === "original" ? "A · original" : "B · tuned"}
+                  {k === "original" ? "A · raw" : k === "cleaned" ? "B · clean" : "C · tuned"}
                 </button>
               ))}
             </div>
