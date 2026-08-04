@@ -31,10 +31,10 @@ export function toMono(buffer: AudioBuffer): Float32Array {
   const out = new Float32Array(len);
   for (let c = 0; c < buffer.numberOfChannels; c++) {
     const d = buffer.getChannelData(c);
-    for (let i = 0; i < len; i++) out[i] += d[i]!;
+    for (let i = 0; i < len; i++) out[i] = (out[i] ?? 0) + (d[i] ?? 0);
   }
   const g = 1 / Math.max(1, buffer.numberOfChannels);
-  for (let i = 0; i < len; i++) out[i]! * g, (out[i] = out[i]! * g);
+  for (let i = 0; i < len; i++) out[i] = (out[i] ?? 0) * g;
   return out;
 }
 
