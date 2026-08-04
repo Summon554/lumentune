@@ -97,10 +97,6 @@ export function spectralDenoise(signal: Float32Array, amount: number): Float32Ar
 
   for (let f = 0; f < positions.length; f++) {
     const pos = positions[f]!;
-    const src re = 0; // placeholder removed
-  }
-  for (let f = 0; f < positions.length; f++) {
-    const pos = positions[f]!;
     const sr = reFrames[f]!;
     const si = imFrames[f]!;
     const mask = masks[f]!;
