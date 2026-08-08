@@ -16,7 +16,8 @@ import {
   renderMix,
   type MixSettings,
 } from "@/lib/audio/mix";
-import { processVocal, type CorrectionSettings } from "@/lib/audio/process";
+import type { CorrectionSettings } from "@/lib/audio/process";
+import { runProcessVocal, terminateProcessWorker } from "@/lib/audio/process-client";
 import { DEFAULT_DENOISE, estimateNoiseFloorDb, type DenoiseSettings } from "@/lib/audio/denoise";
 import { listProjects, uploadAudio, downloadAudio, deleteProject, type ProjectRow } from "@/lib/projects";
 
@@ -80,17 +81,29 @@ export function StudioApp() {
   const rafRef = useRef<number | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
+  const processingRef = useRef(false);
+  const lastRunRef = useRef<string | null>(null);
+  const countdownIvRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const takeCounterRef = useRef(1);
 
   const active = takes.find((t) => t.id === activeId) ?? null;
   const beatPeriod = analysis && analysis.bpm > 0 ? 60 / analysis.bpm : 0.6;
   const duration = Math.max(instrBuffer?.duration ?? 0, active?.duration ?? 0);
 
+  // what you hear (follows the A/B switch)
   const vocalForPlayback = useMemo(() => {
     if (!active) return null;
     if (ab === "corrected" && active.corrected) return active.corrected;
     if (ab === "cleaned" && active.cleaned) return active.cleaned;
     return active.data;
   }, [active, ab]);
+
+  // what gets exported/saved: always the best rendition available
+  const bestVocal = useMemo(() => {
+    if (!active) return null;
+    return active.corrected ?? active.cleaned ?? active.data;
+  }, [active]);
 
   const vocalPeaks = useMemo(() => {
     if (!active) return null;
@@ -176,7 +189,13 @@ export function StudioApp() {
     [instrBuffer, mix, vocalForPlayback, active, offsetMs, metronome, analysis, beatPeriod, stopNodes],
   );
 
+  // position clock only runs while something is actually playing
   useEffect(() => {
+    if (!playing) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      return;
+    }
     const tick = () => {
       const s = startRef.current;
       if (s) {
@@ -189,8 +208,32 @@ export function StudioApp() {
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     };
-  }, [duration, stop]);
+  }, [playing, duration, stop]);
+
+  // teardown: mic, recorder, transport, timers and the audio worker
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (countdownIvRef.current) clearInterval(countdownIvRef.current);
+      try {
+        if (recorderRef.current && recorderRef.current.state !== "inactive") {
+          recorderRef.current.onstop = null;
+          recorderRef.current.stop();
+        }
+      } catch {
+        /* noop */
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      recorderRef.current = null;
+      stopNodes();
+      terminateProcessWorker();
+      void ctxSingleton?.close();
+      ctxSingleton = null;
+    };
+  }, [stopNodes]);
 
   /* ------------------------------------------------------------- instrumental */
 
@@ -217,8 +260,53 @@ export function StudioApp() {
 
   /* ----------------------------------------------------------------- recording */
 
+  /** Schedules the count-in clicks and the instrumental (delayed by the lead) in one pass. */
+  const scheduleCountIn = useCallback(
+    (leadBeats: number) => {
+      const ctx = audioCtx();
+      void ctx.resume();
+      stopNodes();
+      const t0 = ctx.currentTime + 0.15;
+      const lead = leadBeats * beatPeriod;
+
+      if (metronome) {
+        for (let i = 0; i < leadBeats; i++) {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.frequency.value = i === 0 ? 1600 : 1100;
+          const at = t0 + i * beatPeriod;
+          g.gain.setValueAtTime(0.0001, at);
+          g.gain.exponentialRampToValueAtTime(0.35, at + 0.005);
+          g.gain.exponentialRampToValueAtTime(0.0001, at + 0.07);
+          osc.connect(g);
+          g.connect(ctx.destination);
+          osc.start(at);
+          osc.stop(at + 0.09);
+          nodesRef.current.push(osc, g);
+        }
+      }
+
+      if (instrBuffer) {
+        const src = ctx.createBufferSource();
+        src.buffer = instrBuffer;
+        const g = ctx.createGain();
+        g.gain.value = mix.instrumentalGain;
+        src.connect(g);
+        g.connect(ctx.destination);
+        src.start(t0 + lead, 0);
+        nodesRef.current.push(src, g);
+      }
+
+      startRef.current = { ctxTime: t0 + lead, from: 0 };
+      setPlaying(true);
+      return { t0, lead };
+    },
+    [beatPeriod, instrBuffer, metronome, mix.instrumentalGain, stopNodes],
+  );
+
   const startRecording = useCallback(async () => {
-    if (recording) return;
+    if (recording || startingRef.current) return;
+    startingRef.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -236,21 +324,29 @@ export function StudioApp() {
       };
 
       const leadBeats = 4;
-      const lead = leadBeats * beatPeriod;
+      // measured at rec.start(): how much audio precedes bar 1 in the capture
+      let trimSeconds = leadBeats * beatPeriod;
 
       rec.onstop = async () => {
+        // release the mic only once the recorder has handed over its last chunk
         stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+        recorderRef.current = null;
         setRecording(false);
+        setCountdown(null);
         stop();
         try {
           const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
           const buf = await audioCtx().decodeAudioData(await blob.arrayBuffer());
           const mono = toMono(buf);
-          const skip = Math.min(mono.length, Math.floor(lead * buf.sampleRate));
+          const skip = Math.max(
+            0,
+            Math.min(mono.length, Math.floor(trimSeconds * buf.sampleRate)),
+          );
           const trimmed = mono.slice(skip);
           const take: Take = {
             id: crypto.randomUUID(),
-            name: `Take ${takes.length + 1}`,
+            name: `Take ${takeCounterRef.current++}`,
             data: trimmed,
             sampleRate: buf.sampleRate,
             peaks: waveformPeaks(trimmed, PEAK_BUCKETS),
@@ -276,84 +372,73 @@ export function StudioApp() {
         }
       };
 
-      // beat-synced 4-count, then instrumental + recording roll together
-      setCountdown(leadBeats);
+      // schedule audio first, then roll tape and measure the real offset
+      const { t0, lead } = scheduleCountIn(leadBeats);
       rec.start();
+      const recStart = audioCtx().currentTime;
+      trimSeconds = Math.max(0, t0 + lead - recStart);
       setRecording(true);
-      play(0, { withVocal: false, clickBeats: leadBeats });
-      // the instrumental is scheduled at t0; offset its playback by the lead
-      stopNodesAfterCount(lead);
+      setCountdown(leadBeats);
 
+      if (countdownIvRef.current) clearInterval(countdownIvRef.current);
       let remaining = leadBeats;
-      const iv = setInterval(() => {
+      countdownIvRef.current = setInterval(() => {
         remaining -= 1;
         setCountdown(remaining > 0 ? remaining : null);
-        if (remaining <= 0) clearInterval(iv);
+        if (remaining <= 0 && countdownIvRef.current) {
+          clearInterval(countdownIvRef.current);
+          countdownIvRef.current = null;
+        }
       }, beatPeriod * 1000);
     } catch (err) {
       console.error(err);
       toast.error("Microphone access denied");
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
       setRecording(false);
+      setCountdown(null);
+    } finally {
+      startingRef.current = false;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recording, beatPeriod, play, stop, takes.length]);
-
-  // restart the instrumental exactly after the count-in so vocal time 0 == bar 1
-  const stopNodesAfterCount = useCallback(
-    (lead: number) => {
-      const ctx = audioCtx();
-      stopNodes();
-      const t0 = ctx.currentTime + 0.12;
-      if (metronome && analysis) {
-        for (let i = 0; i < 4; i++) {
-          const osc = ctx.createOscillator();
-          const g = ctx.createGain();
-          osc.frequency.value = i === 0 ? 1600 : 1100;
-          const at = t0 + i * beatPeriod;
-          g.gain.setValueAtTime(0.0001, at);
-          g.gain.exponentialRampToValueAtTime(0.35, at + 0.005);
-          g.gain.exponentialRampToValueAtTime(0.0001, at + 0.07);
-          osc.connect(g);
-          g.connect(ctx.destination);
-          osc.start(at);
-          osc.stop(at + 0.09);
-          nodesRef.current.push(osc, g);
-        }
-      }
-      if (instrBuffer) {
-        const src = ctx.createBufferSource();
-        src.buffer = instrBuffer;
-        const g = ctx.createGain();
-        g.gain.value = mix.instrumentalGain;
-        src.connect(g);
-        g.connect(ctx.destination);
-        src.start(t0 + lead, 0);
-        nodesRef.current.push(src, g);
-      }
-      startRef.current = { ctxTime: t0 + lead, from: 0 };
-      setPlaying(true);
-    },
-    [analysis, beatPeriod, instrBuffer, metronome, mix.instrumentalGain, stopNodes],
-  );
+  }, [recording, beatPeriod, scheduleCountIn, stop]);
 
   const stopRecording = useCallback(() => {
-    recorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    // tracks are stopped inside rec.onstop so the final chunk isn't lost
+    const rec = recorderRef.current;
+    if (rec && rec.state !== "inactive") rec.stop();
+    else {
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setRecording(false);
+    }
   }, []);
 
   /* ---------------------------------------------------------------- processing */
 
   const runCorrection = useCallback(async () => {
-    if (!active) return;
+    if (!active || processingRef.current) return;
+    const signature = JSON.stringify({
+      id: active.id,
+      settings,
+      denoise,
+      key: analysis?.key ?? null,
+      bpm: analysis?.bpm ?? null,
+    });
+    if (active.corrected && lastRunRef.current === signature) {
+      setAb("corrected");
+      toast.info("Already tuned with these settings");
+      return;
+    }
+    processingRef.current = true;
     stop();
     setProcessing({ label: "Starting", pct: 0 });
     try {
-      const res = await processVocal(
+      const res = await runProcessVocal(
         active.data,
         active.sampleRate,
         analysis,
         { ...settings, denoise },
-        (label, pct) => setProcessing({ label, pct }),
+        (label: string, pct: number) => setProcessing({ label, pct }),
       );
       setTakes((prev) =>
         prev.map((t) =>
@@ -370,12 +455,14 @@ export function StudioApp() {
             : t,
         ),
       );
+      lastRunRef.current = signature;
       setAb("corrected");
       toast.success("Vocal tuned and aligned");
     } catch (err) {
       console.error(err);
       toast.error("Processing failed");
     } finally {
+      processingRef.current = false;
       setProcessing(null);
     }
   }, [active, analysis, settings, denoise, stop]);
@@ -385,7 +472,7 @@ export function StudioApp() {
   const exportAudio = useCallback(
     async (kind: "mix" | "vocal" | "instrumental") => {
       const sampleRate = active?.sampleRate ?? instrBuffer?.sampleRate ?? 44100;
-      const vocal = vocalForPlayback;
+      const vocal = bestVocal;
       if (kind === "vocal" && !vocal) {
         toast.error("No vocal to export");
         return;
@@ -412,7 +499,7 @@ export function StudioApp() {
         setBusy(null);
       }
     },
-    [active, instrBuffer, mix, vocalForPlayback],
+    [active, instrBuffer, mix, bestVocal],
   );
 
   /* ------------------------------------------------------------------ projects */
@@ -454,17 +541,17 @@ export function StudioApp() {
           encodeWav(instrBuffer),
         );
       }
-      if (vocalForPlayback && active) {
-        const ctx = new OfflineAudioContext(1, vocalForPlayback.length, sampleRate);
+      if (bestVocal && active) {
+        const ctx = new OfflineAudioContext(1, bestVocal.length, sampleRate);
         vocalPath = await uploadAudio(
           user.id,
           `${id}/vocal.wav`,
-          encodeWav(monoToBuffer(ctx, vocalForPlayback, sampleRate)),
+          encodeWav(monoToBuffer(ctx, bestVocal, sampleRate)),
         );
       }
-      if (instrBuffer || vocalForPlayback) {
+      if (instrBuffer || bestVocal) {
         const rendered = await renderMix({
-          vocal: vocalForPlayback,
+          vocal: bestVocal,
           instrumental: instrBuffer,
           sampleRate,
           settings: mix,
@@ -496,7 +583,7 @@ export function StudioApp() {
     user,
     instrBuffer,
     active,
-    vocalForPlayback,
+    bestVocal,
     mix,
     analysis,
     projectName,
