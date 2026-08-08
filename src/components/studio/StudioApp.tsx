@@ -455,17 +455,17 @@ export function StudioApp() {
           encodeWav(instrBuffer),
         );
       }
-      if (vocalForPlayback && active) {
-        const ctx = new OfflineAudioContext(1, vocalForPlayback.length, sampleRate);
+      if (bestVocal && active) {
+        const ctx = new OfflineAudioContext(1, bestVocal.length, sampleRate);
         vocalPath = await uploadAudio(
           user.id,
           `${id}/vocal.wav`,
-          encodeWav(monoToBuffer(ctx, vocalForPlayback, sampleRate)),
+          encodeWav(monoToBuffer(ctx, bestVocal, sampleRate)),
         );
       }
-      if (instrBuffer || vocalForPlayback) {
+      if (instrBuffer || bestVocal) {
         const rendered = await renderMix({
-          vocal: vocalForPlayback,
+          vocal: bestVocal,
           instrumental: instrBuffer,
           sampleRate,
           settings: mix,
@@ -497,7 +497,7 @@ export function StudioApp() {
     user,
     instrBuffer,
     active,
-    vocalForPlayback,
+    bestVocal,
     mix,
     analysis,
     projectName,
