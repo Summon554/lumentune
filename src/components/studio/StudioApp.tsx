@@ -177,7 +177,13 @@ export function StudioApp() {
     [instrBuffer, mix, vocalForPlayback, active, offsetMs, metronome, analysis, beatPeriod, stopNodes],
   );
 
+  // position clock only runs while something is actually playing
   useEffect(() => {
+    if (!playing) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      return;
+    }
     const tick = () => {
       const s = startRef.current;
       if (s) {
@@ -190,8 +196,32 @@ export function StudioApp() {
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     };
-  }, [duration, stop]);
+  }, [playing, duration, stop]);
+
+  // teardown: mic, recorder, transport, timers and the audio worker
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (countdownIvRef.current) clearInterval(countdownIvRef.current);
+      try {
+        if (recorderRef.current && recorderRef.current.state !== "inactive") {
+          recorderRef.current.onstop = null;
+          recorderRef.current.stop();
+        }
+      } catch {
+        /* noop */
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      recorderRef.current = null;
+      stopNodes();
+      terminateProcessWorker();
+      void ctxSingleton?.close();
+      ctxSingleton = null;
+    };
+  }, [stopNodes]);
 
   /* ------------------------------------------------------------- instrumental */
 
