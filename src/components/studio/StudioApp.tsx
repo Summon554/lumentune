@@ -345,16 +345,29 @@ export function StudioApp() {
   /* ---------------------------------------------------------------- processing */
 
   const runCorrection = useCallback(async () => {
-    if (!active) return;
+    if (!active || processingRef.current) return;
+    const signature = JSON.stringify({
+      id: active.id,
+      settings,
+      denoise,
+      key: analysis?.key ?? null,
+      bpm: analysis?.bpm ?? null,
+    });
+    if (active.corrected && lastRunRef.current === signature) {
+      setAb("corrected");
+      toast.info("Already tuned with these settings");
+      return;
+    }
+    processingRef.current = true;
     stop();
     setProcessing({ label: "Starting", pct: 0 });
     try {
-      const res = await processVocal(
+      const res = await runProcessVocal(
         active.data,
         active.sampleRate,
         analysis,
         { ...settings, denoise },
-        (label, pct) => setProcessing({ label, pct }),
+        (label: string, pct: number) => setProcessing({ label, pct }),
       );
       setTakes((prev) =>
         prev.map((t) =>
@@ -371,12 +384,14 @@ export function StudioApp() {
             : t,
         ),
       );
+      lastRunRef.current = signature;
       setAb("corrected");
       toast.success("Vocal tuned and aligned");
     } catch (err) {
       console.error(err);
       toast.error("Processing failed");
     } finally {
+      processingRef.current = false;
       setProcessing(null);
     }
   }, [active, analysis, settings, denoise, stop]);
