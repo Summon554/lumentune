@@ -81,17 +81,29 @@ export function StudioApp() {
   const rafRef = useRef<number | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
+  const processingRef = useRef(false);
+  const lastRunRef = useRef<string | null>(null);
+  const countdownIvRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const takeCounterRef = useRef(1);
 
   const active = takes.find((t) => t.id === activeId) ?? null;
   const beatPeriod = analysis && analysis.bpm > 0 ? 60 / analysis.bpm : 0.6;
   const duration = Math.max(instrBuffer?.duration ?? 0, active?.duration ?? 0);
 
+  // what you hear (follows the A/B switch)
   const vocalForPlayback = useMemo(() => {
     if (!active) return null;
     if (ab === "corrected" && active.corrected) return active.corrected;
     if (ab === "cleaned" && active.cleaned) return active.cleaned;
     return active.data;
   }, [active, ab]);
+
+  // what gets exported/saved: always the best rendition available
+  const bestVocal = useMemo(() => {
+    if (!active) return null;
+    return active.corrected ?? active.cleaned ?? active.data;
+  }, [active]);
 
   const vocalPeaks = useMemo(() => {
     if (!active) return null;
