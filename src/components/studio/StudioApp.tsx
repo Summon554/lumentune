@@ -413,7 +413,7 @@ export function StudioApp() {
         setBusy(null);
       }
     },
-    [active, instrBuffer, mix, vocalForPlayback],
+    [active, instrBuffer, mix, bestVocal],
   );
 
   /* ------------------------------------------------------------------ projects */
