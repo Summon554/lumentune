@@ -386,7 +386,7 @@ export function StudioApp() {
   const exportAudio = useCallback(
     async (kind: "mix" | "vocal" | "instrumental") => {
       const sampleRate = active?.sampleRate ?? instrBuffer?.sampleRate ?? 44100;
-      const vocal = vocalForPlayback;
+      const vocal = bestVocal;
       if (kind === "vocal" && !vocal) {
         toast.error("No vocal to export");
         return;
