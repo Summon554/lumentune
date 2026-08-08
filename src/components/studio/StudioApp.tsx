@@ -16,7 +16,8 @@ import {
   renderMix,
   type MixSettings,
 } from "@/lib/audio/mix";
-import { processVocal, type CorrectionSettings } from "@/lib/audio/process";
+import type { CorrectionSettings } from "@/lib/audio/process";
+import { runProcessVocal, terminateProcessWorker } from "@/lib/audio/process-client";
 import { DEFAULT_DENOISE, estimateNoiseFloorDb, type DenoiseSettings } from "@/lib/audio/denoise";
 import { listProjects, uploadAudio, downloadAudio, deleteProject, type ProjectRow } from "@/lib/projects";
 
