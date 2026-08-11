@@ -88,6 +88,10 @@ export function StudioApp() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [projectName, setProjectName] = useState("Untitled session");
 
+  const [generated, setGenerated] = useState(false);
+  const [backing, setBacking] = useState<VocalMusicGuess | null>(null);
+  const [backingStyle, setBackingStyle] = useState<BackingStyle>("pads");
+
   const nodesRef = useRef<AudioNode[]>([]);
   const startRef = useRef<{ ctxTime: number; from: number } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -95,6 +99,7 @@ export function StudioApp() {
   const streamRef = useRef<MediaStream | null>(null);
   const startingRef = useRef(false);
   const processingRef = useRef(false);
+  const loadingInstrRef = useRef(false);
   const lastRunRef = useRef<string | null>(null);
   const countdownIvRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const takeCounterRef = useRef(1);
