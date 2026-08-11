@@ -522,7 +522,7 @@ export function StudioApp() {
     } finally {
       startingRef.current = false;
     }
-  }, [recording, beatPeriod, scheduleCountIn, stop]);
+  }, [recording, beatPeriod, scheduleCountIn, stop, addTake]);
 
   const stopRecording = useCallback(() => {
     // tracks are stopped inside rec.onstop so the final chunk isn't lost
