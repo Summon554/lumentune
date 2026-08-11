@@ -6,7 +6,19 @@ import { Waveform } from "./Waveform";
 import { Fader } from "./Fader";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { analyzeInstrumental, toMono, waveformPeaks, type Analysis } from "@/lib/audio/analyze";
+import {
+  NOTE_NAMES,
+  analyzeInstrumental,
+  toMono,
+  waveformPeaks,
+  type Analysis,
+} from "@/lib/audio/analyze";
+import {
+  analyzeVocalForBacking,
+  renderBacking,
+  type BackingStyle,
+  type VocalMusicGuess,
+} from "@/lib/audio/backing";
 import {
   DEFAULT_MIX,
   connectVocalChain,
