@@ -486,27 +486,7 @@ export function StudioApp() {
             Math.min(mono.length, Math.floor(trimSeconds * buf.sampleRate)),
           );
           const trimmed = mono.slice(skip);
-          const take: Take = {
-            id: crypto.randomUUID(),
-            name: `Take ${takeCounterRef.current++}`,
-            data: trimmed,
-            sampleRate: buf.sampleRate,
-            peaks: waveformPeaks(trimmed, PEAK_BUCKETS),
-            duration: trimmed.length / buf.sampleRate,
-            cleaned: null,
-            cleanedPeaks: null,
-            corrected: null,
-            correctedPeaks: null,
-            noiseFloorDb: estimateNoiseFloorDb(trimmed, buf.sampleRate),
-            onsets: [],
-            alignedOnsets: [],
-          };
-          setDenoise((d) => ({
-            ...d,
-            thresholdDb: Math.round(Math.min(-24, take.noiseFloorDb + 10)),
-          }));
-          setTakes((prev) => [...prev, take]);
-          setActiveId(take.id);
+          addTake(trimmed, buf.sampleRate, `Take ${takeCounterRef.current++}`);
           toast.success("Take captured — tune it below");
         } catch (err) {
           console.error(err);
