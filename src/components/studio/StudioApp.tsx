@@ -804,8 +804,10 @@ export function StudioApp() {
                 type="file"
                 accept="audio/mpeg,audio/wav,audio/*,.mp3,.wav"
                 className="hidden"
+                disabled={!!busy || analyzing || recording}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
+                  e.target.value = "";
                   if (f) void loadInstrumental(f, f.name);
                 }}
               />
@@ -819,7 +821,7 @@ export function StudioApp() {
               position={position}
               beats={analysis?.beats ?? []}
               downbeats={analysis?.downbeats ?? []}
-              onSeek={(t) => play(t)}
+              onSeek={(t) => play(Math.max(0, Math.min(t, Math.max(0, duration - 0.05))))}
               height={80}
             />
           </div>
