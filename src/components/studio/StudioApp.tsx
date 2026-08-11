@@ -237,26 +237,151 @@ export function StudioApp() {
 
   /* ------------------------------------------------------------- instrumental */
 
-  const loadInstrumental = useCallback(async (file: File | Blob, name: string) => {
-    setAnalyzing(true);
-    try {
-      const ctx = audioCtx();
-      const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-      const mono = toMono(buf);
-      setInstrBuffer(buf);
-      setInstrName(name);
-      setInstrPeaks(waveformPeaks(mono, PEAK_BUCKETS));
-      await new Promise((r) => setTimeout(r, 0));
-      const a = analyzeInstrumental(mono, buf.sampleRate);
-      setAnalysis(a);
-      toast.success(`Detected ${a.bpm} BPM · ${a.key}`);
-    } catch (err) {
-      console.error(err);
-      toast.error("Couldn't read that audio file");
-    } finally {
-      setAnalyzing(false);
-    }
+  const loadInstrumental = useCallback(
+    async (file: File | Blob, name: string) => {
+      if (loadingInstrRef.current) return;
+      loadingInstrRef.current = true;
+      stop();
+      setAnalyzing(true);
+      setInstrPeaks(null);
+      setAnalysis(null);
+      try {
+        const ctx = audioCtx();
+        const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+        const mono = toMono(buf);
+        setInstrBuffer(buf);
+        setInstrName(name);
+        setInstrPeaks(waveformPeaks(mono, PEAK_BUCKETS));
+        await new Promise((r) => setTimeout(r, 0));
+        const a = analyzeInstrumental(mono, buf.sampleRate);
+        setAnalysis(a);
+        setGenerated(false);
+        toast.success(`Detected ${a.bpm} BPM · ${a.key}`);
+      } catch (err) {
+        console.error(err);
+        setInstrBuffer(null);
+        setInstrName("");
+        toast.error("Couldn't read that audio file");
+      } finally {
+        setAnalyzing(false);
+        loadingInstrRef.current = false;
+      }
+    },
+    [stop],
+  );
+
+  /* ----------------------------------------------------------------- takes in */
+
+  const addTake = useCallback((mono: Float32Array, sampleRate: number, name: string) => {
+    const take: Take = {
+      id: crypto.randomUUID(),
+      name,
+      data: mono,
+      sampleRate,
+      peaks: waveformPeaks(mono, PEAK_BUCKETS),
+      duration: mono.length / sampleRate,
+      cleaned: null,
+      cleanedPeaks: null,
+      corrected: null,
+      correctedPeaks: null,
+      noiseFloorDb: estimateNoiseFloorDb(mono, sampleRate),
+      onsets: [],
+      alignedOnsets: [],
+    };
+    setDenoise((d) => ({ ...d, thresholdDb: Math.round(Math.min(-24, take.noiseFloorDb + 10)) }));
+    setTakes((prev) => [...prev, take]);
+    setActiveId(take.id);
+    setAb("original");
+    return take;
   }, []);
+
+  const uploadVocal = useCallback(
+    async (file: File) => {
+      if (busy) return;
+      setBusy("Loading vocal…");
+      stop();
+      try {
+        const buf = await audioCtx().decodeAudioData(await file.arrayBuffer());
+        const mono = toMono(buf);
+        const take = addTake(mono, buf.sampleRate, file.name.replace(/\.[^.]+$/, "") || "Vocal");
+        toast.success(`Loaded “${take.name}” — ${take.duration.toFixed(1)}s`);
+      } catch (err) {
+        console.error(err);
+        toast.error("Couldn't read that vocal file");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [addTake, busy, stop],
+  );
+
+  /* --------------------------------------------------------- backing generator */
+
+  const generateBacking = useCallback(
+    async (override?: Partial<{ bpm: number; tonic: number; mode: "major" | "minor"; style: BackingStyle }>) => {
+      if (!active) {
+        toast.error("Record or upload a vocal first");
+        return;
+      }
+      if (busy) return;
+      if (instrBuffer && !generated) {
+        const ok = window.confirm("Replace the uploaded instrumental with a generated one?");
+        if (!ok) return;
+      }
+      setBusy("Writing a backing track…");
+      stop();
+      try {
+        const guess =
+          backing ?? analyzeVocalForBacking(active.data, active.sampleRate);
+        if (!backing) setBacking(guess);
+
+        const bpm = override?.bpm ?? backing?.bpm ?? guess.bpm;
+        const tonic = override?.tonic ?? backing?.tonic ?? guess.tonic;
+        const mode = override?.mode ?? backing?.mode ?? guess.mode;
+        const style = override?.style ?? backingStyle;
+        setBacking({ bpm, tonic, mode, key: `${NOTE_NAMES[tonic]} ${mode}` });
+        setBackingStyle(style);
+
+        const barLen = (60 / bpm) * 4;
+        const bars = Math.max(2, Math.ceil(active.duration / barLen));
+        const buf = await renderBacking({
+          bpm,
+          tonic,
+          mode,
+          bars,
+          style,
+          sampleRate: active.sampleRate,
+        });
+        const mono = toMono(buf);
+        setInstrBuffer(buf);
+        setInstrName(`Generated · ${NOTE_NAMES[tonic]} ${mode} · ${bpm} BPM`);
+        setInstrPeaks(waveformPeaks(mono, PEAK_BUCKETS));
+        setGenerated(true);
+
+        const beats: number[] = [];
+        const beatLen = 60 / bpm;
+        for (let t = 0; t < buf.duration; t += beatLen) beats.push(t);
+        setAnalysis({
+          bpm,
+          key: `${NOTE_NAMES[tonic]} ${mode}`,
+          tonic,
+          mode,
+          beats,
+          downbeats: beats.filter((_, i) => i % 4 === 0),
+          duration: buf.duration,
+          confidence: 1,
+        });
+        toast.success(`Backing track in ${NOTE_NAMES[tonic]} ${mode} at ${bpm} BPM`);
+      } catch (err) {
+        console.error(err);
+        toast.error("Couldn't generate a backing track");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [active, backing, backingStyle, busy, generated, instrBuffer, stop],
+  );
+
 
   /* ----------------------------------------------------------------- recording */
 
